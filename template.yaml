@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DumpRequest App
+
+Resources:
+  DumpRequestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app/
+      Handler: lambda.handler
+      Runtime: nodejs8.10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+      Events:
+        DumpRequestApi:
+          Type: Api
+          Properties:
+            Path: /dump
+            Method: post
+  Table:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: timestamp
+        Type: Number
+
+Outputs:
+  DumpRequestApi:
+    Description: "API Gateway endpoint URL for Prod stage for Dump Request function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/dump"
+  DumpRequestFunction:
+    Description: "Dump Request Lambda Function ARN"
+    Value: !GetAtt DumpRequestFunction.Arn
+  DumpRequestFunctionIamRole:
+    Description: "Implicit IAM Role created for Dump Request function"
+    Value: !GetAtt DumpRequestFunctionRole.Arn

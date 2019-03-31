@@ -1,0 +1,14 @@
+{
+  "name": "dumprequest",
+  "version": "1.0.0",
+  "description": "Dumps incoming request information",
+  "main": "lambda.js",
+  "author": "Denys Burdeniuk",
+  "license": "MIT",
+  "scripts": {
+    "test:unit": "./node_modules/.bin/jest /tests/unit"
+  },
+  "devDependencies": {
+    "jest": "24.5.0"
+  }
+}

@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  ArtifactStoreBucket:
+    Type: String
+    Default: dumprequest-artifacts
+  TemplateStoreBucket:
+    Type: String
+    Default: dumprequest-templates
+  EscalationEmail:
+    Type: String
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: CI/CD Configurations
+        Parameters:
+          - ArtifactStoreBucket
+          - TemplateStoreBucket
+      - Label:
+          default: Monitoring Configurations
+        Parameters:
+          - EscalationEmail
+
+Resources:
+  EscalationTopic:
+    Type: AWS::SNS::Topic
+
+  EscalationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref EscalationTopic
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: sns:Publish
+            Resource: !Ref EscalationTopic
+
+  EscalationEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref EscalationEmail
+      Protocol: email
+      TopicArn: !Ref EscalationTopic
+
+  PipelineTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess # @TODO: replace with less powerful policy
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess # @TODO: replace with less powerful policy
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: cloudformation.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess # @TODO: replace with less powerful policy
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt PipelineTrustRole.Arn
+      ArtifactStore:
+        Location: !Ref ArtifactStoreBucket
+        Type: S3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: Owner # @TODO: insert an Owner
+                Repo: dump-request-test # @TODO: rename if needed
+                Branch: master
+                OAuthToken: OAuthToken # @TODO: insert OAuthToken
+              InputArtifacts: []
+              OutputArtifacts:
+                - Name: TriggerOutput
+              RunOrder: 1
+        - Name: GitHub
+          Actions:
+            - Name: GitHub
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref Source
+              InputArtifacts:
+                - Name: TriggerOutput
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref Build
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+        - Name: Staging
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: 'CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND'
+                StackName: !Sub ${AWS::StackName}-STAGING
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                TemplatePath: BuildOutput::template-packaged.yaml
+              InputArtifacts:
+                - Name: BuildOutput
+              OutputArtifacts: []
+              RunOrder: 1
+        - Name: Approval
+          Actions:
+            - Name: Approval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: 1
+                Provider: Manual
+              InputArtifacts: []
+              OutputArtifacts: []
+              RunOrder: 1
+        - Name: Production
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: 'CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND'
+                StackName: !Sub ${AWS::StackName}-PRODUCTION
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                TemplatePath: BuildOutput::template-packaged.yaml
+              InputArtifacts:
+                - Name: BuildOutput
+              OutputArtifacts: []
+              RunOrder: 1
+
+  Source:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/nodejs:8.11.0
+        Type: LINUX_CONTAINER
+      Name: !Sub ${AWS::StackName}-Source
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: # @TODO: insert REPO_BASE_URL and change base-directory if needed
+          !Sub |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - git clone --branch master --single-branch REPO_BASE_URL/dump-request-test.git
+          artifacts:
+            files:
+              - '**/*'
+            base-directory: 'dump-request-test*'
+
+  Build:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/nodejs:8.11.0
+        Type: LINUX_CONTAINER
+      Name: !Sub ${AWS::StackName}-Build
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec:
+          !Sub |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - cd app
+                - npm install
+                - npm run test:unit
+                - cd ..
+                - aws cloudformation package --s3-bucket ${TemplateStoreBucket} --s3-prefix dump-request-test --template-file ./template.yaml --output-template-file ./template-packaged.yaml
+          artifacts:
+            files:
+              - '**/*'
+
+  PipelineFailedAlarm:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codepipeline
+        detail-type:
+          - CodePipeline Pipeline Execution State Change
+        detail:
+          state:
+            - FAILED
+          pipeline:
+            - !Ref Pipeline
+      State: ENABLED
+      Targets:
+        - Id: PipelineFailedAlarm
+          Arn: !Ref EscalationTopic
+          InputTransformer:
+            InputPathsMap:
+              region: $.region
+              pipeline: $.detail.pipeline
+              state: $.detail.state
+            InputTemplate: '"The state of Pipeline <pipeline> is <state>. Go to https://console.aws.amazon.com/codepipeline/home?region=<region>#/view/<pipeline>"'
